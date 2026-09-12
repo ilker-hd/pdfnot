@@ -1,7 +1,7 @@
 import type { DocRecord, PageRecord, StrokeRecord, Tool } from "../models/types";
 import { PEN_COLORS, FONT_CHOICES, BLANK_PAGE_DEFAULTS } from "../models/types";
 import { getDocument, putDocument, touchDocument } from "../db/documentsRepo";
-import { listPages, putPage } from "../db/pagesRepo";
+import { listPages, putPage, deletePage } from "../db/pagesRepo";
 import { listStrokes, putStroke, deleteStroke } from "../db/strokesRepo";
 import { listTextNotes, putTextNote, deleteTextNote } from "../db/textNotesRepo";
 import { loadPdfFromBlob, type PDFDocumentProxy } from "../pdf/pdfLoader";
@@ -14,7 +14,7 @@ import { downloadBlob } from "../db/backupService";
 import { uuid } from "../utils/uuid";
 import { Toolbar } from "./toolbar";
 import { TextNoteLayer } from "./textNoteLayer";
-import { showPrompt } from "./modal";
+import { showPrompt, showConfirm, showAlert } from "./modal";
 
 type UndoAction = { type: "add"; stroke: StrokeRecord } | { type: "erase"; strokes: StrokeRecord[] };
 
@@ -88,6 +88,7 @@ class DocumentViewController {
         onUndo: () => this.undo(),
         onExportPdf: () => this.exportPdf(),
         onAddPage: () => this.addBlankPage(),
+        onDeletePage: () => this.deleteCurrentPage(),
         onZoomIn: () => this.setZoom(this.zoomFactor + ZOOM_STEP),
         onZoomOut: () => this.setZoom(this.zoomFactor - ZOOM_STEP),
         onZoomReset: () => this.setZoom(1),
@@ -190,8 +191,10 @@ class DocumentViewController {
     let viewport: ViewportLike;
     const dpr = window.devicePixelRatio || 1;
 
-    if (this.doc.type === "pdf" && this.srcPdf) {
-      const srcPage = await this.srcPdf.getPage(page.index + 1);
+    const isOriginalPdfPage = this.doc.type === "pdf" && !!this.srcPdf && page.index < this.srcPdf.numPages;
+
+    if (isOriginalPdfPage) {
+      const srcPage = await this.srcPdf!.getPage(page.index + 1);
       const baseViewport = srcPage.getViewport({ scale: 1, rotation: page.rotation });
       this.scale = this.computeFitScale(baseViewport.width) * this.zoomFactor;
       const pdfViewport = srcPage.getViewport({ scale: this.scale, rotation: page.rotation });
@@ -374,11 +377,11 @@ class DocumentViewController {
   }
 
   private async addBlankPage(): Promise<void> {
-    const index = this.pages.length;
+    const nextIndex = this.pages.length > 0 ? Math.max(...this.pages.map((p) => p.index)) + 1 : 0;
     const page: PageRecord = {
       id: uuid(),
       documentId: this.doc.id,
-      index,
+      index: nextIndex,
       pageSpaceWidth: BLANK_PAGE_WIDTH,
       pageSpaceHeight: BLANK_PAGE_HEIGHT,
       rotation: 0,
@@ -389,7 +392,23 @@ class DocumentViewController {
     this.doc.updatedAt = Date.now();
     await touchDocument(this.doc.id);
     this.pages.push(page);
-    await this.loadPage(index);
+    await this.loadPage(this.pages.length - 1);
+  }
+
+  private async deleteCurrentPage(): Promise<void> {
+    if (this.pages.length <= 1) {
+      await showAlert("Bir defterde en az bir sayfa olmalı — bu son sayfa silinemiyor.");
+      return;
+    }
+    const confirmed = await showConfirm("Bu sayfa, üzerindeki tüm çizim ve notlarla birlikte silinsin mi? Bu işlem geri alınamaz.");
+    if (!confirmed) return;
+    const page = this.pages[this.currentPageIndex];
+    await deletePage(page.id);
+    this.pages.splice(this.currentPageIndex, 1);
+    this.doc.pageCount = this.pages.length;
+    await touchDocument(this.doc.id);
+    const newIndex = Math.min(this.currentPageIndex, this.pages.length - 1);
+    await this.loadPage(newIndex);
   }
 
   private async exportPdf(): Promise<void> {

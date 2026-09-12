@@ -12,6 +12,7 @@ export interface ToolbarCallbacks {
   onUndo(): void;
   onExportPdf(): void;
   onAddPage(): void;
+  onDeletePage(): void;
   onZoomIn(): void;
   onZoomOut(): void;
   onZoomReset(): void;
@@ -134,6 +135,7 @@ export class Toolbar {
     pencilOnlyLabel.appendChild(document.createTextNode("Sadece Apple Pencil"));
 
     const addPageBtn = this.button("+ Sayfa", undefined, () => callbacks.onAddPage());
+    const deletePageBtn = this.button("🗑 Sayfayı Sil", undefined, () => callbacks.onDeletePage());
     const exportBtn = this.button("⇩ PDF Aktar", undefined, () => callbacks.onExportPdf());
 
     const spacer = document.createElement("div");
@@ -152,6 +154,7 @@ export class Toolbar {
       pencilOnlyLabel,
       spacer,
       addPageBtn,
+      deletePageBtn,
       exportBtn,
     );
 
