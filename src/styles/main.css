@@ -1,0 +1,346 @@
+:root {
+  --bg: #f4f2ee;
+  --panel: #ffffff;
+  --ink: #1c1c1e;
+  --muted: #8a8a8e;
+  --accent: #1f6fe0;
+  --border: #e0ddd6;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  overscroll-behavior: none;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* Library */
+.library-view {
+  padding: 24px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.library-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.library-header h1 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.library-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.library-empty {
+  color: var(--muted);
+  grid-column: 1 / -1;
+}
+
+.doc-card {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doc-thumb {
+  font-size: 40px;
+  text-align: center;
+}
+
+.doc-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.doc-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  padding: 4px 8px;
+}
+
+/* Document view */
+.document-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.toolbar-back {
+  font-weight: 600;
+}
+
+.toolbar-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.color-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  padding: 0;
+  border: 2px solid transparent;
+}
+
+.color-swatch.active {
+  border-color: var(--ink);
+}
+
+.toolbar-width input[type="range"] {
+  vertical-align: middle;
+}
+
+.toolbar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.font-btn {
+  font-size: 13px;
+}
+
+.page-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px;
+  background: var(--bg);
+}
+
+.page-indicator {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 100px;
+  text-align: center;
+}
+
+.page-stage {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg);
+}
+
+.page-surface {
+  position: relative;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  background: white;
+  flex-shrink: 0;
+}
+
+.base-canvas,
+.ink-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.ink-canvas {
+  touch-action: none;
+}
+
+.text-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.text-note {
+  position: absolute;
+  border: 1px dashed rgba(31, 111, 224, 0.4);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.6);
+  min-width: 40px;
+  min-height: 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+.text-note-handle {
+  cursor: move;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1;
+  padding: 2px;
+  touch-action: none;
+}
+
+.text-note-body {
+  flex: 1;
+  outline: none;
+  padding: 2px 4px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.text-note-close {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  padding: 0;
+  line-height: 1;
+  font-size: 14px;
+  display: none;
+}
+
+.text-note:hover .text-note-close,
+.text-note:focus-within .text-note-close {
+  display: block;
+}
+
+/* Modal dialogs */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-box {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 20px;
+  width: min(320px, 90vw);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.modal-box p {
+  margin: 0 0 12px;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  margin-bottom: 16px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.modal-danger {
+  background: #d92b2b;
+  color: white;
+  border-color: #d92b2b;
+}
+
+.text-note-resize {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: var(--accent);
+  border-radius: 3px;
+  touch-action: none;
+}

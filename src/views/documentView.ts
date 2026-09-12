@@ -1,0 +1,332 @@
+import type { DocRecord, PageRecord, StrokeRecord, Tool } from "../models/types";
+import { PEN_COLORS, FONT_CHOICES, BLANK_PAGE_DEFAULTS } from "../models/types";
+import { getDocument, touchDocument } from "../db/documentsRepo";
+import { listPages, putPage } from "../db/pagesRepo";
+import { listStrokes, putStroke, deleteStroke } from "../db/strokesRepo";
+import { listTextNotes, putTextNote, deleteTextNote } from "../db/textNotesRepo";
+import { loadPdfFromBlob, type PDFDocumentProxy } from "../pdf/pdfLoader";
+import { makeBlankViewport, BLANK_PAGE_WIDTH, BLANK_PAGE_HEIGHT, type ViewportLike } from "../pdf/pageViewport";
+import { renderStrokes, renderStroke } from "../ink/strokeRenderer";
+import { StrokeEngine } from "../ink/strokeEngine";
+import { findStrokesToErase } from "../ink/eraser";
+import { exportDocumentAsPdf } from "../pdf/pdfExport";
+import { downloadBlob } from "../db/backupService";
+import { uuid } from "../utils/uuid";
+import { Toolbar } from "./toolbar";
+import { TextNoteLayer } from "./textNoteLayer";
+
+type UndoAction = { type: "add"; stroke: StrokeRecord } | { type: "erase"; strokes: StrokeRecord[] };
+
+const ERASER_RADIUS_CSS_PX = 14;
+
+export async function openDocumentView(container: HTMLElement, documentId: string, navigateToLibrary: () => void): Promise<void> {
+  const doc = await getDocument(documentId);
+  if (!doc) {
+    container.textContent = "Belge bulunamadı.";
+    return;
+  }
+  const controller = new DocumentViewController(container, doc, navigateToLibrary);
+  await controller.mount();
+}
+
+class DocumentViewController {
+  private pages: PageRecord[] = [];
+  private currentPageIndex = 0;
+  private srcPdf: PDFDocumentProxy | null = null;
+
+  private tool: Tool = "pen";
+  private color = PEN_COLORS[0];
+  private width = 3;
+  private fontId = FONT_CHOICES[0].id;
+  private pencilOnly = false;
+
+  private strokes: StrokeRecord[] = [];
+  private undoStack: UndoAction[] = [];
+  private pendingErased: StrokeRecord[] = [];
+  private activeStroke: StrokeRecord | null = null;
+
+  private engine?: StrokeEngine;
+  private textLayer?: TextNoteLayer;
+  private viewport?: ViewportLike;
+  private scale = 1;
+
+  private toolbar: Toolbar;
+  private pageStage: HTMLElement;
+  private pageIndicator: HTMLElement;
+  private resizeHandler = () => this.loadPage(this.currentPageIndex);
+  private resizeTimer: number | undefined;
+
+  private doc: DocRecord;
+
+  constructor(container: HTMLElement, doc: DocRecord, navigateToLibrary: () => void) {
+    this.doc = doc;
+    this.toolbar = new Toolbar({
+      onBack: () => navigateToLibrary(),
+      onToolChange: (tool) => this.setTool(tool),
+      onColorChange: (color) => {
+        this.color = color;
+        if (this.tool === "text") this.textLayer?.setActiveNoteStyle(this.fontId, color);
+      },
+      onWidthChange: (width) => (this.width = width),
+      onFontChange: (fontId) => {
+        this.fontId = fontId;
+        if (this.tool === "text") this.textLayer?.setActiveNoteStyle(fontId, this.color);
+      },
+      onPencilOnlyChange: (enabled) => {
+        this.pencilOnly = enabled;
+        this.engine?.setPencilOnly(enabled);
+      },
+      onUndo: () => this.undo(),
+      onExportPdf: () => this.exportPdf(),
+      onAddPage: () => this.addBlankPage(),
+    });
+
+    this.pageIndicator = document.createElement("div");
+    this.pageIndicator.className = "page-indicator";
+
+    const nav = document.createElement("div");
+    nav.className = "page-nav";
+    const prevBtn = document.createElement("button");
+    prevBtn.textContent = "‹ Önceki";
+    prevBtn.addEventListener("click", () => this.loadPage(this.currentPageIndex - 1));
+    const nextBtn = document.createElement("button");
+    nextBtn.textContent = "Sonraki ›";
+    nextBtn.addEventListener("click", () => this.loadPage(this.currentPageIndex + 1));
+    nav.append(prevBtn, this.pageIndicator, nextBtn);
+
+    this.pageStage = document.createElement("div");
+    this.pageStage.className = "page-stage";
+
+    container.innerHTML = "";
+    container.className = "document-view";
+    container.append(this.toolbar.el, nav, this.pageStage);
+  }
+
+  async mount(): Promise<void> {
+    if (this.doc.type === "pdf" && this.doc.originalPdfBlob) {
+      this.srcPdf = await loadPdfFromBlob(this.doc.originalPdfBlob);
+    }
+    this.pages = await listPages(this.doc.id);
+    window.addEventListener("resize", () => {
+      window.clearTimeout(this.resizeTimer);
+      this.resizeTimer = window.setTimeout(this.resizeHandler, 200);
+    });
+    await this.loadPage(0);
+  }
+
+  private setTool(tool: Tool): void {
+    this.tool = tool;
+    this.updateToolMode();
+  }
+
+  private updateToolMode(): void {
+    const inkCanvas = this.pageStage.querySelector<HTMLCanvasElement>(".ink-canvas");
+    if (inkCanvas) inkCanvas.style.pointerEvents = this.tool === "pen" || this.tool === "eraser" ? "auto" : "none";
+    if (this.textLayer) this.textLayer.el.style.pointerEvents = this.tool === "text" ? "auto" : "none";
+    this.pageStage.style.cursor = this.tool === "eraser" ? "cell" : this.tool === "text" ? "text" : "crosshair";
+  }
+
+  private computeScale(pageSpaceWidth: number): number {
+    const available = Math.max(320, this.pageStage.clientWidth - 32);
+    const scale = available / pageSpaceWidth;
+    return Math.min(2.5, Math.max(0.3, scale));
+  }
+
+  async loadPage(index: number): Promise<void> {
+    if (index < 0 || index >= this.pages.length) return;
+    this.currentPageIndex = index;
+    const page = this.pages[index];
+
+    this.pageStage.innerHTML = "";
+    const surface = document.createElement("div");
+    surface.className = "page-surface";
+
+    const baseCanvas = document.createElement("canvas");
+    baseCanvas.className = "base-canvas";
+    const inkCanvas = document.createElement("canvas");
+    inkCanvas.className = "ink-canvas";
+    surface.append(baseCanvas, inkCanvas);
+    this.pageStage.appendChild(surface);
+
+    let viewport: ViewportLike;
+    const dpr = window.devicePixelRatio || 1;
+
+    if (this.doc.type === "pdf" && this.srcPdf) {
+      const srcPage = await this.srcPdf.getPage(page.index + 1);
+      const baseViewport = srcPage.getViewport({ scale: 1, rotation: page.rotation });
+      this.scale = this.computeScale(baseViewport.width);
+      const pdfViewport = srcPage.getViewport({ scale: this.scale, rotation: page.rotation });
+      baseCanvas.width = Math.floor(pdfViewport.width * dpr);
+      baseCanvas.height = Math.floor(pdfViewport.height * dpr);
+      baseCanvas.style.width = `${pdfViewport.width}px`;
+      baseCanvas.style.height = `${pdfViewport.height}px`;
+      const bctx = baseCanvas.getContext("2d")!;
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      await srcPage.render({ canvasContext: bctx, viewport: pdfViewport, canvas: baseCanvas }).promise;
+      viewport = pdfViewport;
+    } else {
+      this.scale = this.computeScale(page.pageSpaceWidth);
+      viewport = makeBlankViewport(page.pageSpaceWidth, page.pageSpaceHeight, this.scale);
+      baseCanvas.width = Math.floor(viewport.width * dpr);
+      baseCanvas.height = Math.floor(viewport.height * dpr);
+      baseCanvas.style.width = `${viewport.width}px`;
+      baseCanvas.style.height = `${viewport.height}px`;
+      const bctx = baseCanvas.getContext("2d")!;
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bctx.fillStyle = "#ffffff";
+      bctx.fillRect(0, 0, viewport.width, viewport.height);
+    }
+
+    inkCanvas.width = Math.floor(viewport.width * dpr);
+    inkCanvas.height = Math.floor(viewport.height * dpr);
+    inkCanvas.style.width = `${viewport.width}px`;
+    inkCanvas.style.height = `${viewport.height}px`;
+    surface.style.width = `${viewport.width}px`;
+    surface.style.height = `${viewport.height}px`;
+    const inkCtx = inkCanvas.getContext("2d")!;
+    inkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    this.viewport = viewport;
+    this.strokes = await listStrokes(page.id);
+    renderStrokes(inkCtx, this.strokes, viewport, this.scale);
+
+    this.engine?.detach();
+    this.engine = new StrokeEngine(
+      inkCanvas,
+      {
+        onStart: (point) => this.onPointerStart(point, inkCtx),
+        onMove: (points) => this.onPointerMove(points, inkCtx),
+        onEnd: () => this.onPointerEnd(),
+        onCancel: () => this.onPointerEnd(),
+      },
+      () => this.viewport!,
+    );
+    this.engine.setPencilOnly(this.pencilOnly);
+    this.engine.attach();
+
+    const notes = await listTextNotes(page.id);
+    this.textLayer = new TextNoteLayer(
+      page.id,
+      viewport,
+      this.scale,
+      {
+        onSave: (note) => putTextNote(note).then(() => touchDocument(this.doc.id)),
+        onDelete: (id) => deleteTextNote(id),
+      },
+      () => this.fontId,
+      () => this.color,
+    );
+    this.textLayer.loadNotes(notes);
+    surface.appendChild(this.textLayer.el);
+
+    this.undoStack = [];
+    this.pendingErased = [];
+    this.updateToolMode();
+    this.pageIndicator.textContent = `Sayfa ${index + 1} / ${this.pages.length}`;
+  }
+
+  private onPointerStart(point: { x: number; y: number; pressure: number }, ctx: CanvasRenderingContext2D): void {
+    if (this.tool === "pen") {
+      this.activeStroke = {
+        id: uuid(),
+        pageId: this.pages[this.currentPageIndex].id,
+        tool: "pen",
+        color: this.color,
+        baseWidth: this.width,
+        points: [point],
+        order: this.strokes.length + this.undoStack.length,
+        createdAt: Date.now(),
+      };
+      renderStroke(ctx, this.activeStroke, this.viewport!, this.scale);
+    } else if (this.tool === "eraser") {
+      this.eraseAt(point, ctx);
+    }
+  }
+
+  private onPointerMove(points: { x: number; y: number; pressure: number }[], ctx: CanvasRenderingContext2D): void {
+    if (this.tool === "pen" && this.activeStroke) {
+      this.activeStroke.points.push(...points);
+      renderStroke(ctx, this.activeStroke, this.viewport!, this.scale);
+    } else if (this.tool === "eraser") {
+      for (const p of points) this.eraseAt(p, ctx);
+    }
+  }
+
+  private onPointerEnd(): void {
+    if (this.tool === "pen" && this.activeStroke) {
+      const stroke = this.activeStroke;
+      this.activeStroke = null;
+      this.strokes.push(stroke);
+      this.undoStack.push({ type: "add", stroke });
+      putStroke(stroke).then(() => touchDocument(this.doc.id));
+    } else if (this.tool === "eraser" && this.pendingErased.length > 0) {
+      this.undoStack.push({ type: "erase", strokes: this.pendingErased });
+      this.pendingErased = [];
+    }
+  }
+
+  private eraseAt(point: { x: number; y: number }, ctx: CanvasRenderingContext2D): void {
+    const threshold = ERASER_RADIUS_CSS_PX / this.scale;
+    const hitIds = findStrokesToErase(this.strokes, point, threshold);
+    if (hitIds.length === 0) return;
+    const hitSet = new Set(hitIds);
+    const removed = this.strokes.filter((s) => hitSet.has(s.id));
+    this.strokes = this.strokes.filter((s) => !hitSet.has(s.id));
+    for (const s of removed) {
+      this.pendingErased.push(s);
+      deleteStroke(s.id);
+    }
+    touchDocument(this.doc.id);
+    this.redrawInk(ctx);
+  }
+
+  private redrawInk(ctx: CanvasRenderingContext2D): void {
+    const canvas = ctx.canvas;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderStrokes(ctx, this.strokes, this.viewport!, this.scale);
+  }
+
+  private undo(): void {
+    const action = this.undoStack.pop();
+    if (!action) return;
+    const inkCanvas = this.pageStage.querySelector<HTMLCanvasElement>(".ink-canvas");
+    if (!inkCanvas) return;
+    const ctx = inkCanvas.getContext("2d")!;
+    if (action.type === "add") {
+      this.strokes = this.strokes.filter((s) => s.id !== action.stroke.id);
+      deleteStroke(action.stroke.id);
+    } else {
+      this.strokes.push(...action.strokes);
+      for (const s of action.strokes) putStroke(s);
+    }
+    this.redrawInk(ctx);
+    touchDocument(this.doc.id);
+  }
+
+  private async addBlankPage(): Promise<void> {
+    const index = this.pages.length;
+    const page: PageRecord = {
+      id: uuid(),
+      documentId: this.doc.id,
+      index,
+      pageSpaceWidth: BLANK_PAGE_WIDTH,
+      pageSpaceHeight: BLANK_PAGE_HEIGHT,
+      rotation: 0,
+      background: BLANK_PAGE_DEFAULTS.background,
+    };
+    await putPage(page);
+    this.doc.pageCount += 1;
+    this.doc.updatedAt = Date.now();
+    await touchDocument(this.doc.id);
+    this.pages.push(page);
+    await this.loadPage(index);
+  }
+
+  private async exportPdf(): Promise<void> {
+    const blob = await exportDocumentAsPdf(this.doc.id);
+    downloadBlob(blob, `${this.doc.title || "not"}.pdf`);
+  }
+}
