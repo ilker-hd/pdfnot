@@ -1,11 +1,11 @@
-import type { DocRecord, PageRecord, StrokeRecord, Tool } from "../models/types";
+import type { DocRecord, PageRecord, StrokeRecord, Tool, PageBackground } from "../models/types";
 import { PEN_COLORS, FONT_CHOICES, BLANK_PAGE_DEFAULTS } from "../models/types";
 import { getDocument, putDocument, touchDocument } from "../db/documentsRepo";
 import { listPages, putPage, deletePage } from "../db/pagesRepo";
 import { listStrokes, putStroke, deleteStroke } from "../db/strokesRepo";
 import { listTextNotes, putTextNote, deleteTextNote } from "../db/textNotesRepo";
 import { loadPdfFromBlob, type PDFDocumentProxy } from "../pdf/pdfLoader";
-import { makeBlankViewport, BLANK_PAGE_WIDTH, BLANK_PAGE_HEIGHT, type ViewportLike } from "../pdf/pageViewport";
+import { makeBlankViewport, renderBlankBackground, BLANK_PAGE_WIDTH, BLANK_PAGE_HEIGHT, type ViewportLike } from "../pdf/pageViewport";
 import { renderStrokes, renderStroke } from "../ink/strokeRenderer";
 import { StrokeEngine } from "../ink/strokeEngine";
 import { findStrokesToErase } from "../ink/eraser";
@@ -89,6 +89,7 @@ class DocumentViewController {
         onExportPdf: () => this.exportPdf(),
         onAddPage: () => this.addBlankPage(),
         onDeletePage: () => this.deleteCurrentPage(),
+        onBackgroundChange: (bg) => this.setPageBackground(bg),
         onZoomIn: () => this.setZoom(this.zoomFactor + ZOOM_STEP),
         onZoomOut: () => this.setZoom(this.zoomFactor - ZOOM_STEP),
         onZoomReset: () => this.setZoom(1),
@@ -215,8 +216,7 @@ class DocumentViewController {
       baseCanvas.style.height = `${viewport.height}px`;
       const bctx = baseCanvas.getContext("2d")!;
       bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      bctx.fillStyle = "#ffffff";
-      bctx.fillRect(0, 0, viewport.width, viewport.height);
+      renderBlankBackground(bctx, viewport, page.pageSpaceWidth, page.pageSpaceHeight, page.background ?? "plain");
     }
 
     inkCanvas.width = Math.floor(viewport.width * dpr);
@@ -285,6 +285,8 @@ class DocumentViewController {
     this.undoStack = [];
     this.pendingErased = [];
     this.updateToolMode();
+    this.toolbar.setBackgroundControlVisible(!isOriginalPdfPage);
+    this.toolbar.setActiveBackground(page.background ?? "plain");
     this.pageIndicator.textContent = `Sayfa ${index + 1} / ${this.pages.length}`;
 
     if (scrollRatio) {
@@ -374,6 +376,23 @@ class DocumentViewController {
     }
     this.redrawInk(ctx);
     touchDocument(this.doc.id);
+  }
+
+  private async setPageBackground(background: PageBackground): Promise<void> {
+    const page = this.pages[this.currentPageIndex];
+    page.background = background;
+    await putPage(page);
+    await touchDocument(this.doc.id);
+    this.redrawBackground();
+    this.toolbar.setActiveBackground(background);
+  }
+
+  private redrawBackground(): void {
+    const baseCanvas = this.pageStage.querySelector<HTMLCanvasElement>(".base-canvas");
+    if (!baseCanvas || !this.viewport) return;
+    const page = this.pages[this.currentPageIndex];
+    const ctx = baseCanvas.getContext("2d")!;
+    renderBlankBackground(ctx, this.viewport, page.pageSpaceWidth, page.pageSpaceHeight, page.background ?? "plain");
   }
 
   private async addBlankPage(): Promise<void> {

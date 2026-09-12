@@ -1,5 +1,11 @@
-import type { Tool } from "../models/types";
+import type { PageBackground, Tool } from "../models/types";
 import { FONT_CHOICES, PEN_COLORS, TEXT_COLORS } from "../models/types";
+
+const BACKGROUND_CHOICES: { id: PageBackground; label: string }[] = [
+  { id: "plain", label: "⬜ Boş" },
+  { id: "ruled", label: "▤ Çizgili" },
+  { id: "grid", label: "▦ Kareli" },
+];
 
 export interface ToolbarCallbacks {
   onBack(): void;
@@ -13,6 +19,7 @@ export interface ToolbarCallbacks {
   onExportPdf(): void;
   onAddPage(): void;
   onDeletePage(): void;
+  onBackgroundChange(background: PageBackground): void;
   onZoomIn(): void;
   onZoomOut(): void;
   onZoomReset(): void;
@@ -29,6 +36,8 @@ export class Toolbar {
   private widthLabel: HTMLElement;
   private titleBtn: HTMLButtonElement;
   private zoomLabel: HTMLElement;
+  private backgroundGroup: HTMLElement;
+  private backgroundButtons = new Map<PageBackground, HTMLButtonElement>();
 
   constructor(callbacks: ToolbarCallbacks, initialTitle: string) {
     this.el = document.createElement("div");
@@ -134,6 +143,19 @@ export class Toolbar {
     pencilOnlyLabel.appendChild(pencilOnlyCheckbox);
     pencilOnlyLabel.appendChild(document.createTextNode("Sadece Apple Pencil"));
 
+    this.backgroundGroup = document.createElement("div");
+    this.backgroundGroup.className = "toolbar-group toolbar-background";
+    BACKGROUND_CHOICES.forEach(({ id, label }) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.addEventListener("click", () => {
+        this.setActiveBackground(id);
+        callbacks.onBackgroundChange(id);
+      });
+      this.backgroundButtons.set(id, btn);
+      this.backgroundGroup.appendChild(btn);
+    });
+
     const addPageBtn = this.button("+ Sayfa", undefined, () => callbacks.onAddPage());
     const deletePageBtn = this.button("🗑 Sayfayı Sil", undefined, () => callbacks.onDeletePage());
     const exportBtn = this.button("⇩ PDF Aktar", undefined, () => callbacks.onExportPdf());
@@ -152,6 +174,7 @@ export class Toolbar {
       this.textColorRow,
       this.fontRow,
       pencilOnlyLabel,
+      this.backgroundGroup,
       spacer,
       addPageBtn,
       deletePageBtn,
@@ -189,5 +212,13 @@ export class Toolbar {
 
   setZoomLabel(percent: number): void {
     this.zoomLabel.textContent = `${Math.round(percent)}%`;
+  }
+
+  setBackgroundControlVisible(visible: boolean): void {
+    this.backgroundGroup.style.display = visible ? "flex" : "none";
+  }
+
+  setActiveBackground(background: PageBackground): void {
+    this.backgroundButtons.forEach((btn, id) => btn.classList.toggle("active", id === background));
   }
 }
