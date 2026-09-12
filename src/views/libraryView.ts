@@ -114,6 +114,24 @@ function renderCard(doc: DocRecord, openDocument: (id: string) => void, refresh:
   info.append(t, meta);
   card.appendChild(info);
 
+  const cardActions = document.createElement("div");
+  cardActions.className = "doc-card-actions";
+
+  const renameBtn = document.createElement("button");
+  renameBtn.className = "doc-rename";
+  renameBtn.textContent = "✎";
+  renameBtn.title = "Yeniden adlandır";
+  renameBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const name = await showPrompt("Defter adı:", doc.title);
+    if (name === null || !name.trim()) return;
+    doc.title = name.trim();
+    doc.updatedAt = Date.now();
+    await putDocument(doc);
+    refresh();
+  });
+  cardActions.appendChild(renameBtn);
+
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "doc-delete";
   deleteBtn.textContent = "🗑";
@@ -125,7 +143,9 @@ function renderCard(doc: DocRecord, openDocument: (id: string) => void, refresh:
       refresh();
     }
   });
-  card.appendChild(deleteBtn);
+  cardActions.appendChild(deleteBtn);
+
+  card.appendChild(cardActions);
 
   card.addEventListener("click", () => openDocument(doc.id));
   return card;

@@ -115,10 +115,16 @@ button.active {
   color: var(--muted);
 }
 
-.doc-delete {
+.doc-card-actions {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 2px;
+}
+
+.doc-rename,
+.doc-delete {
   border: none;
   background: transparent;
   font-size: 16px;
@@ -144,6 +150,37 @@ button.active {
 
 .toolbar-back {
   font-weight: 600;
+}
+
+.toolbar-title {
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-style: dashed;
+}
+
+.toolbar-zoom {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.toolbar-zoom button {
+  border: none;
+  background: transparent;
+  width: 28px;
+  padding: 6px 0;
+}
+
+.zoom-label {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 44px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
 }
 
 .toolbar-group {
@@ -203,14 +240,13 @@ button.active {
 .page-stage {
   flex: 1;
   overflow: auto;
-  display: flex;
-  justify-content: center;
   padding: 16px;
   background: var(--bg);
 }
 
 .page-surface {
   position: relative;
+  margin: 0 auto;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   background: white;
   flex-shrink: 0;
@@ -233,6 +269,18 @@ button.active {
   left: 0;
   right: 0;
   bottom: 0;
+}
+
+.pan-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  touch-action: none;
+  cursor: grab;
+}
+
+.pan-overlay.panning {
+  cursor: grabbing;
 }
 
 .text-note {

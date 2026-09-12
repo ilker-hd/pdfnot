@@ -3,6 +3,7 @@ import { FONT_CHOICES, PEN_COLORS, TEXT_COLORS } from "../models/types";
 
 export interface ToolbarCallbacks {
   onBack(): void;
+  onRename(): void;
   onToolChange(tool: Tool): void;
   onColorChange(color: string): void;
   onWidthChange(width: number): void;
@@ -11,28 +12,41 @@ export interface ToolbarCallbacks {
   onUndo(): void;
   onExportPdf(): void;
   onAddPage(): void;
+  onZoomIn(): void;
+  onZoomOut(): void;
+  onZoomReset(): void;
 }
 
 export class Toolbar {
   el: HTMLElement;
   private toolButtons = new Map<Tool, HTMLButtonElement>();
   private colorSwatches: HTMLButtonElement[] = [];
-  private currentContext: "pen" | "text" = "pen";
+  private currentContext: "pen" | "text" | "none" = "pen";
   private penColorRow: HTMLElement;
   private textColorRow: HTMLElement;
   private fontRow: HTMLElement;
+  private widthLabel: HTMLElement;
+  private titleBtn: HTMLButtonElement;
+  private zoomLabel: HTMLElement;
 
-  constructor(callbacks: ToolbarCallbacks) {
+  constructor(callbacks: ToolbarCallbacks, initialTitle: string) {
     this.el = document.createElement("div");
     this.el.className = "toolbar";
 
     const backBtn = this.button("←", "Kütüphane", () => callbacks.onBack());
     backBtn.classList.add("toolbar-back");
 
+    this.titleBtn = document.createElement("button");
+    this.titleBtn.className = "toolbar-title";
+    this.titleBtn.textContent = initialTitle;
+    this.titleBtn.title = "Adını değiştirmek için dokunun";
+    this.titleBtn.addEventListener("click", () => callbacks.onRename());
+
     const tools = document.createElement("div");
     tools.className = "toolbar-group toolbar-tools";
-    (["pen", "eraser", "text"] as Tool[]).forEach((tool) => {
-      const label = tool === "pen" ? "✏️ Kalem" : tool === "eraser" ? "🧽 Silgi" : "🔤 Metin";
+    (["pen", "eraser", "text", "select"] as Tool[]).forEach((tool) => {
+      const label =
+        tool === "pen" ? "✏️ Kalem" : tool === "eraser" ? "🧽 Silgi" : tool === "text" ? "🔤 Metin" : "🖐 Kaydır";
       const btn = this.button(label, undefined, () => {
         this.setActiveTool(tool);
         callbacks.onToolChange(tool);
@@ -42,6 +56,17 @@ export class Toolbar {
     });
 
     const undoBtn = this.button("↶ Geri Al", undefined, () => callbacks.onUndo());
+
+    const zoomGroup = document.createElement("div");
+    zoomGroup.className = "toolbar-group toolbar-zoom";
+    const zoomOutBtn = this.button("－", "Uzaklaştır", () => callbacks.onZoomOut());
+    this.zoomLabel = document.createElement("span");
+    this.zoomLabel.className = "zoom-label";
+    this.zoomLabel.textContent = "100%";
+    this.zoomLabel.title = "Sığdır (100%) için dokunun";
+    this.zoomLabel.addEventListener("click", () => callbacks.onZoomReset());
+    const zoomInBtn = this.button("＋", "Yakınlaştır", () => callbacks.onZoomIn());
+    zoomGroup.append(zoomOutBtn, this.zoomLabel, zoomInBtn);
 
     this.penColorRow = document.createElement("div");
     this.penColorRow.className = "toolbar-group toolbar-colors";
@@ -59,16 +84,16 @@ export class Toolbar {
     });
     this.selectSwatch(this.colorSwatches[0], this.colorSwatches);
 
-    const widthLabel = document.createElement("label");
-    widthLabel.className = "toolbar-width";
-    widthLabel.textContent = "Kalınlık";
+    this.widthLabel = document.createElement("label");
+    this.widthLabel.className = "toolbar-width";
+    this.widthLabel.textContent = "Kalınlık";
     const widthInput = document.createElement("input");
     widthInput.type = "range";
     widthInput.min = "1";
     widthInput.max = "12";
     widthInput.value = "3";
     widthInput.addEventListener("input", () => callbacks.onWidthChange(Number(widthInput.value)));
-    widthLabel.appendChild(widthInput);
+    this.widthLabel.appendChild(widthInput);
 
     this.textColorRow = document.createElement("div");
     this.textColorRow.className = "toolbar-group toolbar-colors";
@@ -116,10 +141,12 @@ export class Toolbar {
 
     this.el.append(
       backBtn,
+      this.titleBtn,
       tools,
       undoBtn,
+      zoomGroup,
       this.penColorRow,
-      widthLabel,
+      this.widthLabel,
       this.textColorRow,
       this.fontRow,
       pencilOnlyLabel,
@@ -146,9 +173,18 @@ export class Toolbar {
 
   setActiveTool(tool: Tool): void {
     this.toolButtons.forEach((btn, t) => btn.classList.toggle("active", t === tool));
-    this.currentContext = tool === "text" ? "text" : "pen";
+    this.currentContext = tool === "text" ? "text" : tool === "select" ? "none" : "pen";
     this.penColorRow.style.display = this.currentContext === "pen" ? "flex" : "none";
+    this.widthLabel.style.display = this.currentContext === "pen" ? "inline-flex" : "none";
     this.textColorRow.style.display = this.currentContext === "text" ? "flex" : "none";
     this.fontRow.style.display = this.currentContext === "text" ? "flex" : "none";
+  }
+
+  setTitle(title: string): void {
+    this.titleBtn.textContent = title;
+  }
+
+  setZoomLabel(percent: number): void {
+    this.zoomLabel.textContent = `${Math.round(percent)}%`;
   }
 }

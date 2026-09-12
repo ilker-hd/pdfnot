@@ -1,6 +1,6 @@
 import type { DocRecord, PageRecord, StrokeRecord, Tool } from "../models/types";
 import { PEN_COLORS, FONT_CHOICES, BLANK_PAGE_DEFAULTS } from "../models/types";
-import { getDocument, touchDocument } from "../db/documentsRepo";
+import { getDocument, putDocument, touchDocument } from "../db/documentsRepo";
 import { listPages, putPage } from "../db/pagesRepo";
 import { listStrokes, putStroke, deleteStroke } from "../db/strokesRepo";
 import { listTextNotes, putTextNote, deleteTextNote } from "../db/textNotesRepo";
@@ -14,10 +14,14 @@ import { downloadBlob } from "../db/backupService";
 import { uuid } from "../utils/uuid";
 import { Toolbar } from "./toolbar";
 import { TextNoteLayer } from "./textNoteLayer";
+import { showPrompt } from "./modal";
 
 type UndoAction = { type: "add"; stroke: StrokeRecord } | { type: "erase"; strokes: StrokeRecord[] };
 
 const ERASER_RADIUS_CSS_PX = 14;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
+const ZOOM_STEP = 0.15;
 
 export async function openDocumentView(container: HTMLElement, documentId: string, navigateToLibrary: () => void): Promise<void> {
   const doc = await getDocument(documentId);
@@ -49,6 +53,9 @@ class DocumentViewController {
   private textLayer?: TextNoteLayer;
   private viewport?: ViewportLike;
   private scale = 1;
+  private zoomFactor = 1;
+  private panOverlay?: HTMLElement;
+  private panState: { startX: number; startY: number; scrollLeft: number; scrollTop: number } | null = null;
 
   private toolbar: Toolbar;
   private pageStage: HTMLElement;
@@ -60,26 +67,33 @@ class DocumentViewController {
 
   constructor(container: HTMLElement, doc: DocRecord, navigateToLibrary: () => void) {
     this.doc = doc;
-    this.toolbar = new Toolbar({
-      onBack: () => navigateToLibrary(),
-      onToolChange: (tool) => this.setTool(tool),
-      onColorChange: (color) => {
-        this.color = color;
-        if (this.tool === "text") this.textLayer?.setActiveNoteStyle(this.fontId, color);
+    this.toolbar = new Toolbar(
+      {
+        onBack: () => navigateToLibrary(),
+        onRename: () => this.renameDocument(),
+        onToolChange: (tool) => this.setTool(tool),
+        onColorChange: (color) => {
+          this.color = color;
+          if (this.tool === "text") this.textLayer?.setActiveNoteStyle(this.fontId, color);
+        },
+        onWidthChange: (width) => (this.width = width),
+        onFontChange: (fontId) => {
+          this.fontId = fontId;
+          if (this.tool === "text") this.textLayer?.setActiveNoteStyle(fontId, this.color);
+        },
+        onPencilOnlyChange: (enabled) => {
+          this.pencilOnly = enabled;
+          this.engine?.setPencilOnly(enabled);
+        },
+        onUndo: () => this.undo(),
+        onExportPdf: () => this.exportPdf(),
+        onAddPage: () => this.addBlankPage(),
+        onZoomIn: () => this.setZoom(this.zoomFactor + ZOOM_STEP),
+        onZoomOut: () => this.setZoom(this.zoomFactor - ZOOM_STEP),
+        onZoomReset: () => this.setZoom(1),
       },
-      onWidthChange: (width) => (this.width = width),
-      onFontChange: (fontId) => {
-        this.fontId = fontId;
-        if (this.tool === "text") this.textLayer?.setActiveNoteStyle(fontId, this.color);
-      },
-      onPencilOnlyChange: (enabled) => {
-        this.pencilOnly = enabled;
-        this.engine?.setPencilOnly(enabled);
-      },
-      onUndo: () => this.undo(),
-      onExportPdf: () => this.exportPdf(),
-      onAddPage: () => this.addBlankPage(),
-    });
+      doc.title,
+    );
 
     this.pageIndicator = document.createElement("div");
     this.pageIndicator.className = "page-indicator";
@@ -123,19 +137,44 @@ class DocumentViewController {
     const inkCanvas = this.pageStage.querySelector<HTMLCanvasElement>(".ink-canvas");
     if (inkCanvas) inkCanvas.style.pointerEvents = this.tool === "pen" || this.tool === "eraser" ? "auto" : "none";
     if (this.textLayer) this.textLayer.el.style.pointerEvents = this.tool === "text" ? "auto" : "none";
-    this.pageStage.style.cursor = this.tool === "eraser" ? "cell" : this.tool === "text" ? "text" : "crosshair";
+    if (this.panOverlay) this.panOverlay.style.pointerEvents = this.tool === "select" ? "auto" : "none";
+    this.pageStage.style.cursor =
+      this.tool === "eraser" ? "cell" : this.tool === "text" ? "text" : this.tool === "select" ? "grab" : "crosshair";
   }
 
-  private computeScale(pageSpaceWidth: number): number {
+  private async renameDocument(): Promise<void> {
+    const name = await showPrompt("Defter adı:", this.doc.title);
+    if (name === null || !name.trim()) return;
+    this.doc.title = name.trim();
+    await putDocument(this.doc);
+    this.toolbar.setTitle(this.doc.title);
+  }
+
+  private async setZoom(factor: number): Promise<void> {
+    this.zoomFactor = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, factor));
+    this.toolbar.setZoomLabel(this.zoomFactor * 100);
+    await this.loadPage(this.currentPageIndex, { preserveScroll: true });
+  }
+
+  private computeFitScale(pageSpaceWidth: number): number {
     const available = Math.max(320, this.pageStage.clientWidth - 32);
     const scale = available / pageSpaceWidth;
     return Math.min(2.5, Math.max(0.3, scale));
   }
 
-  async loadPage(index: number): Promise<void> {
+  async loadPage(index: number, opts: { preserveScroll?: boolean } = {}): Promise<void> {
     if (index < 0 || index >= this.pages.length) return;
     this.currentPageIndex = index;
     const page = this.pages[index];
+
+    const stage = this.pageStage;
+    let scrollRatio: { x: number; y: number } | null = null;
+    if (opts.preserveScroll) {
+      scrollRatio = {
+        x: stage.scrollLeft / Math.max(1, stage.scrollWidth - stage.clientWidth),
+        y: stage.scrollTop / Math.max(1, stage.scrollHeight - stage.clientHeight),
+      };
+    }
 
     this.pageStage.innerHTML = "";
     const surface = document.createElement("div");
@@ -154,7 +193,7 @@ class DocumentViewController {
     if (this.doc.type === "pdf" && this.srcPdf) {
       const srcPage = await this.srcPdf.getPage(page.index + 1);
       const baseViewport = srcPage.getViewport({ scale: 1, rotation: page.rotation });
-      this.scale = this.computeScale(baseViewport.width);
+      this.scale = this.computeFitScale(baseViewport.width) * this.zoomFactor;
       const pdfViewport = srcPage.getViewport({ scale: this.scale, rotation: page.rotation });
       baseCanvas.width = Math.floor(pdfViewport.width * dpr);
       baseCanvas.height = Math.floor(pdfViewport.height * dpr);
@@ -165,7 +204,7 @@ class DocumentViewController {
       await srcPage.render({ canvasContext: bctx, viewport: pdfViewport, canvas: baseCanvas }).promise;
       viewport = pdfViewport;
     } else {
-      this.scale = this.computeScale(page.pageSpaceWidth);
+      this.scale = this.computeFitScale(page.pageSpaceWidth) * this.zoomFactor;
       viewport = makeBlankViewport(page.pageSpaceWidth, page.pageSpaceHeight, this.scale);
       baseCanvas.width = Math.floor(viewport.width * dpr);
       baseCanvas.height = Math.floor(viewport.height * dpr);
@@ -219,10 +258,38 @@ class DocumentViewController {
     this.textLayer.loadNotes(notes);
     surface.appendChild(this.textLayer.el);
 
+    const panOverlay = document.createElement("div");
+    panOverlay.className = "pan-overlay";
+    panOverlay.addEventListener("pointerdown", (e) => {
+      panOverlay.setPointerCapture(e.pointerId);
+      panOverlay.classList.add("panning");
+      this.panState = { startX: e.clientX, startY: e.clientY, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
+    });
+    panOverlay.addEventListener("pointermove", (e) => {
+      if (!this.panState) return;
+      stage.scrollLeft = this.panState.scrollLeft - (e.clientX - this.panState.startX);
+      stage.scrollTop = this.panState.scrollTop - (e.clientY - this.panState.startY);
+    });
+    const endPan = () => {
+      this.panState = null;
+      panOverlay.classList.remove("panning");
+    };
+    panOverlay.addEventListener("pointerup", endPan);
+    panOverlay.addEventListener("pointercancel", endPan);
+    surface.appendChild(panOverlay);
+    this.panOverlay = panOverlay;
+
     this.undoStack = [];
     this.pendingErased = [];
     this.updateToolMode();
     this.pageIndicator.textContent = `Sayfa ${index + 1} / ${this.pages.length}`;
+
+    if (scrollRatio) {
+      requestAnimationFrame(() => {
+        stage.scrollLeft = scrollRatio!.x * Math.max(1, stage.scrollWidth - stage.clientWidth);
+        stage.scrollTop = scrollRatio!.y * Math.max(1, stage.scrollHeight - stage.clientHeight);
+      });
+    }
   }
 
   private onPointerStart(point: { x: number; y: number; pressure: number }, ctx: CanvasRenderingContext2D): void {
